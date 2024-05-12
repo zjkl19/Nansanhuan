@@ -1,0 +1,85 @@
+classdef DataProcessor
+    properties
+        CorrectionMap
+        LogFile = 'default_logfile.log'; % 默认日志文件路径
+    end
+    
+    methods
+        function obj = DataProcessor(varargin)
+            % 处理输入参数，允许动态设置属性
+            for k = 1:2:length(varargin)
+                if isprop(obj, varargin{k})
+                    obj.(varargin{k}) = varargin{k+1};
+                end
+            end
+        end
+        
+        function displacement_data = convertToStrain(obj, strain_data, headers)
+            displacement_data = strain_data * 10^-6 * 150;
+            
+            % 提取纯测点编号
+            pattern = '^\d+[A-Z]-\d+';
+            for i = 1:length(headers)
+                headerParts = regexp(headers{i}, pattern, 'match');
+                if ~isempty(headerParts)
+                    pointID = headerParts{1};  % 匹配到的测点编号
+                    if isKey(obj.CorrectionMap, pointID)
+                        correction = obj.CorrectionMap(pointID);
+                        displacement_data(:, i) = displacement_data(:, i) + correction;
+                    end
+                end
+            end
+        end
+        
+        function results = calculateMetrics(obj, displacement_data, headers)
+            numSensors = length(headers);
+%             results = struct('SensorID', headers, ...
+%                 'PeakValue', zeros(numSensors, 1), ...
+%                 'MeanValue', zeros(numSensors, 1));
+            results = struct('SensorID', {}, 'PeakValue', {}, 'MeanValue', {});
+            
+            for i = 1:numSensors
+                % 初始化每个传感器的结构体元素
+                results(i).SensorID = headers{i};
+                results(i).PeakValue = 0;
+                results(i).MeanValue = 0;
+            end
+            
+            % 打开日志文件以追加模式
+            fid = fopen(obj.LogFile, 'a');
+            if fid == -1
+                error('Failed to open log file.');
+            end
+            
+            try
+                for i = 1:numSensors
+                    sensorData = displacement_data(:, i);
+                    try
+                        % 计算峰值和均值
+                        maxValue = max(sensorData);
+                        minValue = min(sensorData);
+                        if abs(maxValue) > abs(minValue)
+                            results(i).PeakValue = max(sensorData);
+                        else
+                            results(i).PeakValue = minValue;
+                        end
+                        results(i).MeanValue = mean(sensorData, 'omitnan');
+                    catch ME
+                       errorMsg = sprintf('%s: Failed to process sensor %s - %s\n', datestr(now), headers{i}, ME.message);
+                        fprintf(fid, errorMsg);  % Log to file
+                        fprintf(2, errorMsg);  % Print to console as well
+                        results(i).PeakValue = NaN;
+                        results(i).MeanValue = NaN;
+                    end
+                end
+            catch ME
+                errorMsg = sprintf('%s: Unexpected error - %s\n', datestr(now), ME.message);
+                fprintf(fid, errorMsg);  % Log to file
+                fprintf(2, errorMsg);  % Print to console as well
+            end
+            
+            fclose(fid);  % 确保在函数结束前关闭文件
+        end
+        
+    end
+end
