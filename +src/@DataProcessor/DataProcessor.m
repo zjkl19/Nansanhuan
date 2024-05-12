@@ -3,8 +3,10 @@ classdef DataProcessor
         CorrectionMap
         LogFile = 'default_logfile.log'; % 默认日志文件路径
         DataFile = 'data/裂缝宽度监测结果.xlsx'; % 默认数据文件路径
-        SheetName = '裂缝宽度数据汇总表'; % 默认工作表名称
-        DecimalPrecision = 3; % 默认保留小数位数
+        OutputDir = 'results/crack_monitoring';
+        SheetName = '裂缝宽度数据汇总表';
+        OutputFileName = '裂缝宽度监测结果-输出.xlsx'; % 文件名作为属性
+        DecimalPrecision=3
     end
     
     methods
@@ -16,6 +18,7 @@ classdef DataProcessor
                 end
             end
         end
+        
         
         function displacement_data = convertToStrain(obj, strain_data, headers)
             displacement_data = strain_data * 10^-6 * 150;
@@ -34,7 +37,7 @@ classdef DataProcessor
             end
         end
         
-        function results = calculateMetrics(obj, displacement_data, headers)
+        function results = computeSensorStatistics(obj, displacement_data, headers)
             % 读取历史峰值数据
             historicalData = readtable(obj.DataFile, 'Sheet', obj.SheetName);
             historicalSensors = historicalData{:, 2};
@@ -42,8 +45,7 @@ classdef DataProcessor
             lastPeriodMeans = historicalData{:, 7};
             
             numSensors = length(headers);
-            results = struct('SensorID', {}, 'PeakValue', {}, 'HistoricalPeakValue', {}, 'PeakDifference', {}, 'MeanValue', {}, 'LastPeriodMean', {}, 'MeanDifference', {});
-            
+            results = struct('SensorID', {}, 'PeakValue', {}, 'HistoricalPeakValue', {}, 'PeakDifference', {}, 'MeanValue', {}, 'LastPeriodMean', {}, 'MeanDifference', {}, 'IsHistoricalPeakUpdated', {}, 'CurrentHistoricalPeak', {});
             for i = 1:numSensors
                 % 初始化每个传感器的结构体元素
                 results(i).SensorID = headers{i};
@@ -67,16 +69,26 @@ classdef DataProcessor
                         % 计算峰值和均值
                         results(i).PeakValue = round(max(sensorData), obj.DecimalPrecision);
                         results(i).MeanValue = round(mean(sensorData, 'omitnan'), obj.DecimalPrecision);
-                          
+                        
                         % 匹配历史峰值
                         index = find(strcmp(historicalSensors, sensorID));
                         if ~isempty(index)
                             if ~strcmp(historicalData{index, 4}, '--')
                                 results(i).HistoricalPeakValue = historicalPeakValues(index);
                                 results(i).PeakDifference = results(i).PeakValue - results(i).HistoricalPeakValue;
+                                % 计算是否更新历史峰值
+                                if results(i).PeakValue > results(i).HistoricalPeakValue
+                                    results(i).IsHistoricalPeakUpdated = 1;
+                                    results(i).CurrentHistoricalPeak = results(i).PeakValue;
+                                else
+                                    results(i).IsHistoricalPeakUpdated = 0;
+                                    results(i).CurrentHistoricalPeak = results(i).HistoricalPeakValue;
+                                end
                             else
                                 results(i).HistoricalPeakValue = NaN;
                                 results(i).PeakDifference = NaN;
+                                results(i).IsHistoricalPeakUpdated = 0;
+                                results(i).CurrentHistoricalPeak = NaN;
                             end
                             if ~strcmp(historicalData{index, 7}, '--')
                                 results(i).LastPeriodMean = lastPeriodMeans(index);
@@ -88,6 +100,8 @@ classdef DataProcessor
                         else
                             results(i).HistoricalPeakValue = NaN;
                             results(i).PeakDifference = NaN;
+                            results(i).IsHistoricalPeakUpdated = 0;
+                            results(i).CurrentHistoricalPeak = NaN;
                             results(i).LastPeriodMean = NaN;
                             results(i).MeanDifference = NaN;
                         end
@@ -108,6 +122,51 @@ classdef DataProcessor
             
             fclose(fid);  % 确保在函数结束前关闭文件
         end
+        
+        function outputFile= prepareOutputDirectory(obj)
+            if ~exist(obj.OutputDir, 'dir')
+                mkdir(obj.OutputDir);
+            end
+                % 移除原始文件名中的.xlsx后缀
+                baseFileName = regexprep(obj.OutputFileName, '\.xlsx$', '');
+
+                % 添加时间戳到输出文件名
+                timestamp = datestr(now, 'yyyymmdd_HHMMSS');
+                outputFile = fullfile(obj.OutputDir, [baseFileName, '_', timestamp, '.xlsx']);
+            if ~exist(outputFile, 'file')
+                copyfile(obj.DataFile, outputFile, 'f');
+            end
+        end
+        
+        function updateExcelFile(obj, results)
+            outputFile =obj.prepareOutputDirectory();
+             % 使用 results 数组的长度确定行数
+            numSensors = numel(results);
+     
+            % 现在读取前10列，到最后一个传感器数据行
+            range = sprintf('A1:J%d', numSensors + 1);
+            [~, ~, raw] = xlsread(outputFile, obj.SheetName, range);
+            
+            % 创建一个与现有数据大小相同的 cell array
+            updatedData = raw;
+            
+            for i = 1:numel(results)
+                coreSensorID = regexp(results(i).SensorID, '^\d+[A-Z]-\d+', 'match', 'once');
+                sensorIndex = find(strcmp(raw(2:end, 2), coreSensorID)) + 1; % 加1因为跳过了表头
+                if ~isempty(sensorIndex)
+                    updatedData{sensorIndex, 3} = results(i).PeakValue;
+                    updatedData{sensorIndex, 5} = results(i).PeakDifference;
+                    updatedData{sensorIndex, 6} = results(i).MeanValue;
+                    updatedData{sensorIndex, 8} = results(i).MeanDifference;
+                    updatedData{sensorIndex, 9} = results(i).IsHistoricalPeakUpdated;
+                    updatedData{sensorIndex, 10} = results(i).CurrentHistoricalPeak;
+                end
+            end
+            
+            % 将更新后的数据写回 Excel 文件，写入相同的范围
+            xlswrite(outputFile, updatedData, obj.SheetName, range);
+        end
+        
         
     end
 end
