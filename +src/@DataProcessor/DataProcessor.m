@@ -53,10 +53,13 @@ classdef DataProcessor
                 results(i).MeanValue = 0;
             end
             
-            % 打开日志文件以追加模式
+            % 打开或创建日志文件
             fid = fopen(obj.LogFile, 'a');
             if fid == -1
-                error('Failed to open log file.');
+                [fid, msg] = fopen(obj.LogFile, 'wt'); % 尝试以写模式创建新文件
+                if fid == -1
+                    error('Failed to open or create log file: %s', msg);
+                end
             end
             
             try
@@ -80,6 +83,18 @@ classdef DataProcessor
                                 if results(i).PeakValue > results(i).HistoricalPeakValue
                                     results(i).IsHistoricalPeakUpdated = 1;
                                     results(i).CurrentHistoricalPeak = results(i).PeakValue;
+                                    % 在日志中记录超过历史峰值的具体值和索引
+                                    exceedingIndices = find(sensorData > results(i).HistoricalPeakValue);
+                                    exceedingValues = sensorData(exceedingIndices);
+                                    fprintf(fid, '%s: 传感器 %s 超过历史峰值。新峰值: %.3f, 历史峰值: %.3f\n', ...
+                                        datestr(now), sensorID, results(i).PeakValue, results(i).HistoricalPeakValue);
+                                    fprintf(2, '%s: 传感器 %s 超过历史峰值。新峰值: %.3f, 历史峰值: %.3f\n', ...
+                                        datestr(now), sensorID, results(i).PeakValue, results(i).HistoricalPeakValue);
+                                    for k = 1:length(exceedingIndices)
+                                        fprintf(fid, '索引: %d, 值: %.3f\n', exceedingIndices(k), exceedingValues(k));
+                                        fprintf(2, '索引: %d, 值: %.3f\n', exceedingIndices(k), exceedingValues(k));
+                                    end
+                                    
                                 else
                                     results(i).IsHistoricalPeakUpdated = 0;
                                     results(i).CurrentHistoricalPeak = results(i).HistoricalPeakValue;
@@ -122,17 +137,16 @@ classdef DataProcessor
             
             fclose(fid);  % 确保在函数结束前关闭文件
         end
-        
         function outputFile= prepareOutputDirectory(obj)
             if ~exist(obj.OutputDir, 'dir')
                 mkdir(obj.OutputDir);
             end
-                % 移除原始文件名中的.xlsx后缀
-                baseFileName = regexprep(obj.OutputFileName, '\.xlsx$', '');
-
-                % 添加时间戳到输出文件名
-                timestamp = datestr(now, 'yyyymmdd_HHMMSS');
-                outputFile = fullfile(obj.OutputDir, [baseFileName, '_', timestamp, '.xlsx']);
+            % 移除原始文件名中的.xlsx后缀
+            baseFileName = regexprep(obj.OutputFileName, '\.xlsx$', '');
+            
+            % 添加时间戳到输出文件名
+            timestamp = datestr(now, 'yyyymmdd_HHMMSS');
+            outputFile = fullfile(obj.OutputDir, [baseFileName, '_', timestamp, '.xlsx']);
             if ~exist(outputFile, 'file')
                 copyfile(obj.DataFile, outputFile, 'f');
             end
@@ -140,9 +154,9 @@ classdef DataProcessor
         
         function updateExcelFile(obj, results)
             outputFile =obj.prepareOutputDirectory();
-             % 使用 results 数组的长度确定行数
+            % 使用 results 数组的长度确定行数
             numSensors = numel(results);
-     
+            
             % 现在读取前10列，到最后一个传感器数据行
             range = sprintf('A1:J%d', numSensors + 1);
             [~, ~, raw] = xlsread(outputFile, obj.SheetName, range);
